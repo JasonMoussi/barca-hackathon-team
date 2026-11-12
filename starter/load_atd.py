@@ -177,20 +177,7 @@ def _position(group, xy, context):
     return (x, y) if math.isfinite(x) and math.isfinite(y) else None
 
 
-def load_frames(data_dir="assets") -> pd.DataFrame:
-    """Stream tactical ATD into frame observations and nearest-player distances.
-
-    Uses GAMES pitch dimensions in metres and frame_id - 1, without half offsets.
-    Missing observations produce NaN distances. nearest_team is nullable and is
-    set only when both teams are seen and one is strictly closer. No possession
-    or dead-ball inference is performed. See load_frames.md for the handoff.
-    """
-    meta_path, raw_path = atd_paths(GAME, data_dir, source="tactical")
-    slots, ball_xy = _frame_layout(meta_path)
-    expected = source_frames("tactical", GAME)
-    length, width = GAMES[GAME]["pitch"]
-    ball_seen = np.zeros(expected, dtype=bool)
-    distances = np.full((expected, 2), np.nan, dtype=np.float64)
+def _tracking_records(raw_path, expected):
     count = 0
     with open(raw_path, encoding="utf-8") as handle:
         for line_number, line in enumerate(handle, 1):
@@ -207,27 +194,57 @@ def load_frames(data_dir="assets") -> pd.DataFrame:
             if frame_id != count + 1:
                 reason = "duplicate/out-of-order frame ID" if frame_id <= count else "missing frames"
                 raise ValueError("{}: {}; expected frame ID {}".format(context, reason, count + 1))
-            groups = parts[1].split(";")
-            if len(groups) != len(slots):
-                raise ValueError("{}: unexpected slot count {}; expected {}".format(
-                    context, len(groups), len(slots)))
-            ball = _position(parts[2], ball_xy, context + ", ball")
-            frame = video_frame_of(frame_id)
-            ball_seen[frame] = ball is not None
-            for slot, (group, (team, xy)) in enumerate(zip(groups, slots), 1):
-                player = _position(group, xy, context + ", player slot {}".format(slot))
-                if ball is None or player is None:
-                    continue
-                distance = math.hypot((player[0] - ball[0]) * length,
-                                      (player[1] - ball[1]) * width)
-                if not math.isfinite(distance):
-                    raise ValueError("{}: player slot {} distance overflow".format(context, slot))
-                if math.isnan(distances[frame, team]) or distance < distances[frame, team]:
-                    distances[frame, team] = distance
             count += 1
+            yield video_frame_of(frame_id), parts[1], parts[2], context
     if count != expected:
         raise ValueError("{}: EOF after {} lines: missing frames; expected frame IDs {}..{}".format(
             raw_path, count, count + 1, expected))
+
+
+def load_ball_positions(data_dir=None) -> np.ndarray:
+    """Raw normalized x/y by tactical video frame, with NaN pairs for missing balls."""
+    meta_path, raw_path = atd_paths(GAME, data_dir, source="tactical")
+    _, ball_xy = _frame_layout(meta_path)
+    expected = source_frames("tactical", GAME)
+    positions = np.full((expected, 2), np.nan)
+    for frame, _, ball_data, context in _tracking_records(raw_path, expected):
+        ball = _position(ball_data, ball_xy, context + ", ball")
+        if ball is not None:
+            positions[frame] = ball
+    return positions
+
+
+def load_frames(data_dir="assets") -> pd.DataFrame:
+    """Stream tactical ATD into frame observations and nearest-player distances.
+
+    Uses GAMES pitch dimensions in metres and frame_id - 1, without half offsets.
+    Missing observations produce NaN distances. nearest_team is nullable and is
+    set only when both teams are seen and one is strictly closer. No possession
+    or dead-ball inference is performed. See load_frames.md for the handoff.
+    """
+    meta_path, raw_path = atd_paths(GAME, data_dir, source="tactical")
+    slots, ball_xy = _frame_layout(meta_path)
+    expected = source_frames("tactical", GAME)
+    length, width = GAMES[GAME]["pitch"]
+    ball_seen = np.zeros(expected, dtype=bool)
+    distances = np.full((expected, 2), np.nan, dtype=np.float64)
+    for frame, players, ball_data, context in _tracking_records(raw_path, expected):
+        groups = players.split(";")
+        if len(groups) != len(slots):
+            raise ValueError("{}: unexpected slot count {}; expected {}".format(
+                context, len(groups), len(slots)))
+        ball = _position(ball_data, ball_xy, context + ", ball")
+        ball_seen[frame] = ball is not None
+        for slot, (group, (team, xy)) in enumerate(zip(groups, slots), 1):
+            player = _position(group, xy, context + ", player slot {}".format(slot))
+            if ball is None or player is None:
+                continue
+            distance = math.hypot((player[0] - ball[0]) * length,
+                                  (player[1] - ball[1]) * width)
+            if not math.isfinite(distance):
+                raise ValueError("{}: player slot {} distance overflow".format(context, slot))
+            if math.isnan(distances[frame, team]) or distance < distances[frame, team]:
+                distances[frame, team] = distance
 
     home, away = distances[:, 0], distances[:, 1]
     nearest_team = pd.array([pd.NA] * expected, dtype="string")
