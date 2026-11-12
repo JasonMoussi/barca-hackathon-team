@@ -147,6 +147,17 @@ class LoadFramesTests(unittest.TestCase):
         self.assertAlmostEqual(row.home_distance_m, 6.8)
         self.assertAlmostEqual(row.away_distance_m, 10.53)
 
+    def test_ball_reader_uses_raw_coordinates_and_video_index(self):
+        root = metadata()
+        ball = root.find("DataFormatSpecification")[2]
+        ball[:] = [ball[2], ball[1], ball[0]]
+        self.write_xml(root)
+        self.raw.write_text(record(ball="NaN,0.2,-0.1") + record(2, ball=MISSING),
+                            encoding="utf-8")
+        with patch.object(load_atd, "source_frames", return_value=2):
+            positions = load_atd.load_ball_positions(self.data_dir)
+        np.testing.assert_array_equal(positions, [[-0.1, 0.2], [np.nan, np.nan]])
+
     def test_invalid_xml_mappings(self):
         mutations = {
             "duplicate team": lambda r: r.append(ET.Element("Team", id="home")),

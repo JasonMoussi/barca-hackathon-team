@@ -195,4 +195,4 @@ competition only, under the terms you accept at enrolment.
 
 ## Team handoff
 
-See [README_BRUNO.md](README_BRUNO.md) for the tracking-loader contract, local setup, and private team GitHub workflow.
+See [README_ANTHONY.md](README_ANTHONY.md) for local tracking setup and the `who_has_it()` possession handoff.
