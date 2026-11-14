@@ -214,6 +214,48 @@ def load_ball_positions(data_dir=None) -> np.ndarray:
     return positions
 
 
+# A top sprint is about 10 m/s. A faster "player" is a tracking glitch, so cap it.
+MAX_PLAYER_SPEED = 12.0
+# With fewer tracked players than this, the average says little about the whole pitch.
+MIN_TRACKED_PLAYERS = 10
+
+
+def load_player_speeds(data_dir=None, min_players=MIN_TRACKED_PLAYERS) -> np.ndarray:
+    """Average speed in m/s of the tracked players, one value per tactical video frame.
+
+    Both teams count together. The value is NaN where fewer than min_players have a
+    speed. A player needs only a finite speed field to count, not a position.
+    """
+    meta_path, raw_path = atd_paths(GAME, data_dir, source="tactical")
+    slots, _ = _frame_layout(meta_path)
+    # Each slot holds x, y and speed in an order set by the XML. Speed is the field left over.
+    speed_fields = [3 - xy[0] - xy[1] for _, xy in slots]
+    expected = source_frames("tactical", GAME)
+    speeds = np.full(expected, np.nan)
+    for frame, players, _, context in _tracking_records(raw_path, expected):
+        groups = players.split(";")
+        if len(groups) != len(slots):
+            raise ValueError("{}: unexpected slot count {}; expected {}".format(
+                context, len(groups), len(slots)))
+        total, tracked = 0.0, 0
+        for slot, (group, field) in enumerate(zip(groups, speed_fields), 1):
+            fields = group.split(",")
+            if len(fields) != 3:
+                raise ValueError("{}, player slot {}: expected x,y,speed (three fields)".format(
+                    context, slot))
+            try:
+                speed = float(fields[field]) if fields[field].strip() else math.nan
+            except ValueError as exc:
+                raise ValueError("{}, player slot {}: nonnumeric speed {!r}".format(
+                    context, slot, group)) from exc
+            if math.isfinite(speed):
+                total += min(speed, MAX_PLAYER_SPEED)
+                tracked += 1
+        if tracked >= min_players:
+            speeds[frame] = total / tracked
+    return speeds
+
+
 def load_frames(data_dir="assets") -> pd.DataFrame:
     """Stream tactical ATD into frame observations and nearest-player distances.
 

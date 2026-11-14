@@ -158,6 +158,33 @@ class LoadFramesTests(unittest.TestCase):
             positions = load_atd.load_ball_positions(self.data_dir)
         np.testing.assert_array_equal(positions, [[-0.1, 0.2], [np.nan, np.nan]])
 
+    def load_speeds(self, text, expected, **options):
+        self.raw.write_text(text, encoding="utf-8")
+        with patch.object(load_atd, "source_frames", return_value=expected):
+            return load_atd.load_player_speeds(self.data_dir, **options)
+
+    def test_player_speed_is_the_average_over_tracked_players(self):
+        speeds = self.load_speeds(
+            record(away="0.1,0,2", home="0,0.1,4") +           # two players: 2 and 4
+            record(2, away="0.1,0,2", home="0,0.1,NaN") +      # one speed is too few
+            record(3, away="0.1,0,50", home="0,0.1,4"),        # 50 m/s is a tracking glitch
+            3, min_players=2)
+        np.testing.assert_allclose(speeds, [3.0, np.nan, 8.0])
+
+    def test_player_speed_follows_the_xml_field_order(self):
+        root = metadata()
+        slot = root.find("DataFormatSpecification")[1][0]
+        slot[:] = [slot[2], slot[1], slot[0]]  # the away slot becomes speed,y,x
+        self.write_xml(root)
+        speeds = self.load_speeds(record(away="5,0,0.1", home="0,0.1,1"), 1, min_players=2)
+        np.testing.assert_allclose(speeds, [3.0])
+
+    def test_player_speed_rejects_malformed_records(self):
+        for text in (record(away="0.1,0"), record(home="0,0.1,fast")):
+            with self.subTest(text=text):
+                with self.assertRaisesRegex(ValueError, "line 1"):
+                    self.load_speeds(text, 1, min_players=1)
+
     def test_invalid_xml_mappings(self):
         mutations = {
             "duplicate team": lambda r: r.append(ET.Element("Team", id="home")),
