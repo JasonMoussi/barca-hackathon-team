@@ -7,13 +7,107 @@ import numpy as np
 import pandas as pd
 
 from games import GAME, GAMES, half_video_blocks
-from starter.load_atd import load_ball_positions
+from starter.load_atd import load_ball_positions, load_player_speeds
 from starter.load_smart_tagging import load as load_events
+
+# Settings for _observed_stoppages. Each one comes from how people and a football move.
+# None of them was fitted to the public ground truth.
+
+# Adults walk at about 1.4 m/s. When the average player is slower, nobody is chasing the ball.
+WALKING_PACE = 1.4
+# Nobody runs faster than about 8 to 10 m/s, so a ball this fast was kicked or thrown.
+PLAYED_SPEED = 8.0
+# After a kick or throw the ball counts as in play for this long. It keeps slow passing
+# between walking players from looking like a stoppage.
+PLAY_MEMORY_S = 2.0
+# The ball must be this far over a line to count as out. It covers tracking jitter.
+OUT_MARGIN = 0.5
+# No restart is taken in under three seconds. Shorter quiet spells are not stoppages, and
+# shorter breaks inside a stoppage are not play.
+MIN_STOPPAGE_S = 3.0
+# Players need about this long to slow to a walk after the whistle. A stoppage found from
+# walking players is moved earlier by this much.
+REACTION_S = 1.5
+# A ball that left the pitch has to be fetched. A break this long before the next sign of
+# the stoppage (players jogging back into position) still belongs to the same stoppage.
+FETCH_S = 10.0
+# Player speed is averaged over this window so one noisy frame does not matter.
+SMOOTH_S = 1.0
 
 
 def _runs(mask):
     """Half-open intervals for contiguous true values."""
     return np.flatnonzero(np.diff(mask, prepend=False, append=False)).reshape(-1, 2)
+
+
+def _observed_stoppages(positions, player_speed, halves, fps, pitch):
+    """Frames where play is stopped, judged from walking players and a ball outside the lines.
+
+    positions holds the ball in metres (NaN when unseen). player_speed is the average
+    player speed in m/s (NaN when unknown). Returns one bool per frame.
+
+    Two kinds of evidence start a stoppage:
+      1. The ball is seen outside the lines.
+      2. The average player walks and the ball has not been kicked or thrown lately,
+         for at least MIN_STOPPAGE_S. A missing ball counts as "not kicked".
+    Short breaks between such stretches are closed, and so is any break in which the
+    ball is never seen. Anything shorter than MIN_STOPPAGE_S is dropped. Nothing is
+    marked outside the halves.
+    """
+    length, width = pitch
+    x, y = positions.T
+    seen = np.isfinite(positions).all(axis=1)
+    with np.errstate(invalid="ignore"):
+        outside = seen & ((x < -OUT_MARGIN) | (x > length + OUT_MARGIN)
+                          | (y < -OUT_MARGIN) | (y > width + OUT_MARGIN))
+
+        # Ball speed across a quarter of a second, centred, so jitter does not look like a kick.
+        reach = max(1, round(0.12 * fps))
+        ball_speed = np.full(len(positions), np.nan)
+        ball_speed[reach:-reach] = np.linalg.norm(
+            positions[2 * reach:] - positions[:-2 * reach], axis=1) * fps / (2 * reach)
+        played = seen & ~outside & (ball_speed >= PLAYED_SPEED)
+
+        window = max(1, round(SMOOTH_S * fps))
+        smooth = pd.Series(player_speed).rolling(
+            window, center=True, min_periods=window // 2 + 1).mean().to_numpy()
+        walking = smooth < WALKING_PACE
+
+    # in_play: the ball was kicked or thrown within the last PLAY_MEMORY_S seconds.
+    memory = max(1, round(PLAY_MEMORY_S * fps))
+    kicks = np.r_[np.zeros(memory, dtype=np.int64), np.cumsum(played)]
+    in_play = kicks[memory:] > kicks[:-memory]
+    idle = walking & ~in_play
+
+    shortest = round(MIN_STOPPAGE_S * fps)
+    reaction = round(REACTION_S * fps)
+    fetch = round(FETCH_S * fps)
+    dead = np.zeros(len(positions), dtype=bool)
+    for _, first, last in halves:
+        half = slice(first, last + 1)
+        out = outside[half]
+        core = out.copy()
+        for start, stop in _runs(idle[half]):
+            if stop - start >= shortest:
+                core[max(0, start - reaction):stop] = True
+
+        ball_seen = seen[half]
+        pieces = _runs(core)
+        for (start, stop), (resume, _) in zip(pieces[:-1], pieces[1:]):
+            # A break between two stoppages is closed in three cases:
+            #  - it is shorter than MIN_STOPPAGE_S, because play cannot restart and stop that fast;
+            #  - the ball went out just before and the break is short enough to be fetching it;
+            #  - the ball is never seen in it, so nothing shows that play restarted
+            #    (players jogging around after a goal look like this).
+            if (resume - stop < shortest
+                    or (resume - stop <= fetch and out[start:stop].any())
+                    or not ball_seen[stop:resume].any()):
+                core[stop:resume] = True
+        for start, stop in _runs(core):
+            if stop - start < shortest:
+                core[start:stop] = False
+        dead[half] = core
+    return dead
 
 
 def _line_crossings(lines, coherent, short_step):
@@ -240,9 +334,18 @@ def is_dead(data_dir=None) -> pd.DataFrame:
     False indicates evidence of live play. NA indicates insufficient evidence
     or a frame outside the graded halves. The function reads the local tactical
     Smart Tagging XML and raw ATD with the usual games.py path conventions.
+
+    Two detectors feed True. _classify pairs a clean line crossing with its restart.
+    _observed_stoppages adds stoppages seen from walking players and a ball outside
+    the lines, which also works while the ball is not tracked. Its True wins over a
+    False from _classify, because a ball carried back to a restart also moves.
     """
     events = load_events(data_dir=data_dir)
     pitch = GAMES[GAME]["pitch"]
+    fps = GAMES[GAME]["fps"]
+    halves = half_video_blocks(GAME)
     positions = load_ball_positions(data_dir=data_dir) * pitch
-    state = _classify(positions, events, half_video_blocks(GAME), GAMES[GAME]["fps"], pitch)
+    state = _classify(positions, events, halves, fps, pitch)
+    player_speed = load_player_speeds(data_dir=data_dir)
+    state[_observed_stoppages(positions, player_speed, halves, fps, pitch)] = True
     return pd.DataFrame({"frame": np.arange(len(positions), dtype=np.int64), "is_dead": state})
