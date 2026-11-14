@@ -9,11 +9,35 @@ import numpy as np
 import pandas as pd
 
 from games import GAME, GAMES, asset_paths
-from starter.is_dead import _apply_intervals, _classify, is_dead
+from starter.is_dead import _apply_intervals, _classify, _observed_stoppages, is_dead
 
 
 FPS = GAMES[GAME]["fps"]
 PITCH = GAMES[GAME]["pitch"]
+RUNNING, WALKING = 3.0, 1.0  # average player speed in m/s
+
+
+def frames(seconds):
+    return round(seconds * FPS)
+
+
+def moving(start, velocity, seconds):
+    """Ball positions in metres, one row per frame, at a steady velocity in m/s."""
+    steps = np.arange(frames(seconds))[:, None]
+    return np.asarray(start, dtype=float) + steps * np.asarray(velocity, dtype=float) / FPS
+
+
+def resting(at, seconds):
+    return np.tile(np.asarray(at, dtype=float), (frames(seconds), 1))
+
+
+def missing(seconds):
+    return np.full((frames(seconds), 2), np.nan)
+
+
+def players(*parts):
+    """Average player speed per frame from (speed, seconds) pairs."""
+    return np.concatenate([np.full(frames(seconds), speed) for speed, seconds in parts])
 
 
 def event(kind, start, end, code="SET PIECES"):
@@ -153,11 +177,125 @@ class DeadBallTests(unittest.TestCase):
                 "<text>Throw-in</text></label></instance></file>",
                 encoding="utf-8",
             )
-            with patch("starter.is_dead.load_ball_positions", return_value=ball / PITCH) as load:
-                with patch("starter.is_dead.half_video_blocks", return_value=[(1, 0, 99)]):
-                    result = is_dead(data_dir=data_dir)
+            running = np.full(len(ball), RUNNING)
+            with patch("starter.is_dead.load_ball_positions", return_value=ball / PITCH) as load, \
+                    patch("starter.is_dead.load_player_speeds", return_value=running) as speeds, \
+                    patch("starter.is_dead.half_video_blocks", return_value=[(1, 0, 99)]):
+                result = is_dead(data_dir=data_dir)
             load.assert_called_once_with(data_dir=data_dir)
+            speeds.assert_called_once_with(data_dir=data_dir)
         self.assertEqual(list(result.columns), ["frame", "is_dead"])
         self.assertEqual([str(dtype) for dtype in result.dtypes], ["int64", "boolean"])
         np.testing.assert_array_equal(result.frame, np.arange(100))
         self.assert_stoppage(result.is_dead.array, 9, 45)
+
+    def test_walking_players_add_stoppages_inside_the_halves_only(self):
+        ball = missing(20)
+        speed = players((RUNNING, 4), (WALKING, 12), (RUNNING, 4))
+        half = [(1, frames(2), frames(18))]
+        with TemporaryDirectory() as data_dir:
+            path = Path(asset_paths(data_dir=data_dir)["smart_tagging"])
+            path.parent.mkdir()
+            path.write_text("<file></file>", encoding="utf-8")
+            with patch("starter.is_dead.load_ball_positions", return_value=ball / PITCH), \
+                    patch("starter.is_dead.load_player_speeds", return_value=speed), \
+                    patch("starter.is_dead.half_video_blocks", return_value=half):
+                state = is_dead(data_dir=data_dir).is_dead
+        self.assertTrue(state[frames(6):frames(15)].all())
+        self.assertTrue(state[:frames(2)].isna().all())
+        self.assertTrue(state[frames(18) + 1:].isna().all())
+
+
+class ObservedStoppageTests(unittest.TestCase):
+    """Stoppages seen from walking players and from a ball outside the lines."""
+
+    def find(self, ball, speed, halves=None):
+        self.assertEqual(len(ball), len(speed))
+        if halves is None:
+            halves = [(1, 0, len(ball) - 1)]
+        return _observed_stoppages(ball, speed, halves, FPS, PITCH)
+
+    def test_ball_missing_while_players_walk_is_a_stoppage(self):
+        ball = np.vstack([moving((20, 30), (10, 0), 5), missing(10), moving((70, 30), (-10, 0), 5)])
+        speed = players((RUNNING, 6), (WALKING, 9), (RUNNING, 5))
+        dead = self.find(ball, speed)
+        self.assertTrue(dead[frames(8):frames(14)].all())
+        self.assertFalse(dead[:frames(5)].any())
+        self.assertFalse(dead[frames(15.5):].any())
+
+    def test_ball_missing_while_players_run_is_live(self):
+        ball = np.vstack([moving((20, 30), (10, 0), 5), missing(10), moving((70, 30), (-10, 0), 5)])
+        self.assertFalse(self.find(ball, players((RUNNING, 20))).any())
+
+    def test_ball_outside_the_lines_is_dead_from_the_first_outside_frame(self):
+        ball = np.vstack([
+            moving((20, 10), (10, 0), 5),      # in play
+            moving((70, 10), (0, -10), 1.3),   # rolls over the touchline to y = -3
+            resting((70, -3), 4),              # held outside the pitch
+            moving((70, -3), (0, 10), 3),      # thrown back in
+        ])
+        outside = ball[:, 1] < -0.5
+        np.testing.assert_array_equal(self.find(ball, players((RUNNING, 13.3))), outside)
+
+    def test_slow_passing_between_walking_players_is_live(self):
+        ball = np.vstack([moving((20, 30), (10, 0), 1.6), resting((36, 30), 1.6),
+                          moving((36, 30), (-10, 0), 1.6), resting((20, 30), 1.6)] * 3)
+        self.assertFalse(self.find(ball, players((WALKING, 19.2))).any())
+
+    def test_placed_ball_is_dead_until_it_is_kicked(self):
+        ball = np.vstack([moving((20, 30), (10, 0), 2), resting((40, 30), 10),
+                          moving((40, 30), (12, 0), 3)])
+        kick = frames(12)
+        dead = self.find(ball, players((WALKING, 15)))
+        self.assertTrue(dead[frames(5):kick - 2].all())
+        self.assertLessEqual(abs(np.flatnonzero(dead)[-1] - kick), 3)
+
+    def test_ball_thrown_back_during_a_stoppage_does_not_split_it(self):
+        ball = np.vstack([moving((20, 30), (10, 0), 2), resting((40, 30), 6),
+                          moving((40, 30), (10, 0), 0.48), resting((44.8, 30), 6),
+                          moving((44.8, 30), (12, 0), 3)])
+        dead = self.find(ball, players((WALKING, 17.48)))
+        self.assertTrue(dead[frames(5):frames(14.3)].all())
+
+    def test_stoppage_continues_while_the_ball_is_brought_back_after_going_out(self):
+        ball = np.vstack([
+            moving((25, 30), (-10, 0), 2.8),   # crosses the goal line to x = -3
+            resting((-3, 30), 1),              # fetched from behind the goal
+            moving((-3, 30), (3, 0), 2.32),    # carried back onto the pitch
+            resting((3.96, 30), 9.88),         # placed while players jog into position
+            moving((3.96, 30), (12, 0), 3),    # goal kick
+        ])
+        speed = players((RUNNING, 10), (WALKING, 6), (RUNNING, 3))
+        first_outside = int(np.flatnonzero(ball[:, 0] < -0.5)[0])
+        dead = self.find(ball, speed)
+        self.assertFalse(dead[:first_outside].any())
+        # Players start running at the kick (16 s). The smoothed speed sees that slightly early.
+        self.assertTrue(dead[first_outside:frames(15.5)].all())
+        self.assertFalse(dead[frames(16.2):].any())
+
+    def test_long_break_is_kept_when_the_ball_never_left_the_pitch(self):
+        ball = np.vstack([moving((20, 30), (10, 0), 1), resting((30, 30), 17)])
+        speed = players((WALKING, 7), (RUNNING, 6), (WALKING, 5))
+        dead = self.find(ball, speed)
+        self.assertTrue(dead[frames(4):frames(6)].all())
+        self.assertFalse(dead[frames(8):frames(11)].any())
+        self.assertTrue(dead[frames(14):frames(17)].all())
+
+    def test_break_with_no_ball_seen_stays_part_of_the_stoppage(self):
+        # A goal celebration: players jog for a while, but the ball never shows up.
+        speed = players((WALKING, 6), (RUNNING, 8), (WALKING, 6))
+        self.assertTrue(self.find(missing(20), speed)[frames(1):frames(19)].all())
+
+    def test_brief_quiet_moment_is_not_a_stoppage(self):
+        speed = players((RUNNING, 5), (WALKING, 2), (RUNNING, 5))
+        self.assertFalse(self.find(missing(12), speed).any())
+
+    def test_unknown_player_speed_gives_no_evidence(self):
+        self.assertFalse(self.find(missing(12), np.full(frames(12), np.nan)).any())
+
+    def test_nothing_is_marked_outside_the_halves(self):
+        speed = players((WALKING, 20))
+        dead = self.find(missing(20), speed, halves=[(1, frames(5), frames(10))])
+        self.assertTrue(dead[frames(6):frames(10)].all())
+        self.assertFalse(dead[:frames(5)].any())
+        self.assertFalse(dead[frames(10) + 1:].any())
