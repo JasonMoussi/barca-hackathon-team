@@ -195,4 +195,4 @@ competition only, under the terms you accept at enrolment.
 
 ## Team handoff
 
-See [README_ANTHONY.md](README_ANTHONY.md) for local tracking setup and the `who_has_it()` possession handoff.
+See [README_CHAHID.md](README_CHAHID.md) for how to join `is_dead()` and `who_has_it()` into the submission file.
