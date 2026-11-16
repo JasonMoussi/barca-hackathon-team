@@ -43,3 +43,17 @@ For comparison, a temporary join that follows the five steps above (not in the r
 Use the public five-minute ground truth for pipeline correctness checks only. The competition prohibits hand labels, manual corrections, and frame-specific exceptions on the provided match. The repository must be able to regenerate the submitted file exactly, so commit the script that writes it. [Competition rules](RULES.md)
 
 Work on a feature branch in the private team repository and keep match assets and local inspection exports out of Git.
+
+## Reproduce the integration
+
+From the repository root, with the authorized bundle unpacked so that its root contains `tactical/`:
+
+```bash
+python -m pip install -r requirements.txt
+python -m unittest discover -s tests -v
+python -m starter.make_chahid_submission --data-dir data --output evaluation/results/chahid.csv
+python evaluation/validate_submission.py evaluation/results/chahid.csv
+python evaluation/run_evaluation.py
+```
+
+If the bundle is elsewhere, replace `data` with its root directory, or omit `--data-dir` after setting `MTAH_DATA_DIR`. The generator reads the tracking and stoppage tables once each. Its output is ignored by Git; submit the generated CSV separately. The public scorer writes its reports under `evaluation/`.
