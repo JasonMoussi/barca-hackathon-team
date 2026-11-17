@@ -5,7 +5,7 @@ import unittest
 import numpy as np
 import pandas as pd
 
-from starter.make_chahid_submission import make_labels
+from starter.make_submission import make_labels
 
 
 def tables(evidence, stoppages=()):
@@ -21,7 +21,7 @@ def tables(evidence, stoppages=()):
     return frames, dead
 
 
-class MakeChahidSubmissionTests(unittest.TestCase):
+class MakeSubmissionTests(unittest.TestCase):
     def test_stoppages_reset_owner_and_restart_prefix_gets_first_owner(self):
         # A short A run after H cannot take possession; after a stop, it can.
         evidence = "?" * 2 + "H" * 25 + "A" * 10 + "?" + "A" * 25

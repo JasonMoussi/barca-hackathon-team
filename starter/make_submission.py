@@ -1,19 +1,28 @@
 """Combine stoppages and live-play ownership into a tactical-frame submission.
 
 Run from the repository root:
-    python -m starter.make_chahid_submission --data-dir data
+    python -m starter.make_submission --data-dir data
+
+Writes evaluation/results/AlfenLiraByte.csv by default. The file is named after the team
+because the scorer names each row of the board after the uploaded file.
 """
 
 import argparse
+import os
+import sys
 from pathlib import Path
 
 import numpy as np
 import pandas as pd
 
-from games import GAME, half_video_blocks, source_frames
-from starter.is_dead import is_dead
-from starter.load_atd import load_frames
-from starter.who_has_it import who_has_it
+HERE = os.path.dirname(os.path.abspath(__file__))
+ROOT = os.path.dirname(HERE)
+if ROOT not in sys.path:
+    sys.path.insert(0, ROOT)
+from games import GAME, half_video_blocks, source_frames  # noqa: E402
+from starter.is_dead import is_dead  # noqa: E402
+from starter.load_atd import load_frames  # noqa: E402
+from starter.who_has_it import who_has_it  # noqa: E402
 
 
 def make_labels(frames, dead, halves=None):
@@ -57,8 +66,8 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--data-dir", default=None,
                         help="bundle root containing tactical/ (default: MTAH_DATA_DIR or data/)")
-    parser.add_argument("--output", default="evaluation/results/chahid.csv",
-                        help="submission CSV path")
+    parser.add_argument("--output", default="evaluation/results/AlfenLiraByte.csv",
+                        help="submission CSV path (name it after the team)")
     args = parser.parse_args()
 
     frames = load_frames(data_dir=args.data_dir)
@@ -68,7 +77,8 @@ def main():
     submission = make_labels(frames, dead)
     output = Path(args.output)
     output.parent.mkdir(parents=True, exist_ok=True)
-    submission.to_csv(output, index=False)
+    # Always "\n" line endings, so the file is byte-identical on every operating system.
+    submission.to_csv(output, index=False, lineterminator="\n")
     print("Wrote {} labels to {}".format(len(submission), output))
     print(submission["label"].value_counts().to_dict())
 

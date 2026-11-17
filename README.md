@@ -195,4 +195,4 @@ competition only, under the terms you accept at enrolment.
 
 ## Team handoff
 
-See [README_CHAHID.md](README_CHAHID.md) for how to join `is_dead()` and `who_has_it()` into the submission file.
+See [INTEGRATION.md](INTEGRATION.md) for how to join `is_dead()` and `who_has_it()` into the submission file.

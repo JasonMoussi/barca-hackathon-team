@@ -1,17 +1,17 @@
-# Chahid's integration handoff
+# Integration handoff: from the two detectors to the submission file
 
 Join Bruno's `is_dead()` and Anthony's `who_has_it()` into one label per frame, and write the submission CSV. A frame is `D` when play is stopped, `H` (Barcelona) or `A` (Athletic Club) when a team has the ball in live play, and `X` when there is no answer. See [the submission format](SUBMISSION.md).
 
 ## Load the inputs
 
-From the repo root, install the existing NumPy and pandas dependencies with `python -m pip install -r requirements.txt`. Place the authorized match files in `assets/tactical/`. Pass the actual bundle root to `data_dir` if yours is elsewhere. It is the folder that holds `tactical/`, not a file.
+From the repo root, install the pinned NumPy and pandas versions with `python -m pip install -r requirements-submission.txt`. Unpack the authorized match bundle so that `data/tactical/` holds the tactical files, which is where [games.py](games.py) looks by default. Pass the actual bundle root to `data_dir` if yours is elsewhere. It is the folder that holds `tactical/`, not a file.
 
 ```python
 from starter.is_dead import is_dead
 from starter.load_atd import load_frames
 
-frames = load_frames(data_dir="assets")
-dead = is_dead(data_dir="assets")
+frames = load_frames(data_dir="data")
+dead = is_dead(data_dir="data")
 ```
 
 Load each table once. Both have 199,319 ordered rows, one per tactical video frame at 25 fps.
@@ -49,11 +49,11 @@ Work on a feature branch in the private team repository and keep match assets an
 From the repository root, with the authorized bundle unpacked so that its root contains `tactical/`:
 
 ```bash
-python -m pip install -r requirements.txt
+python -m pip install -r requirements-submission.txt
 python -m unittest discover -s tests -v
-python -m starter.make_chahid_submission --data-dir data --output evaluation/results/chahid.csv
-python evaluation/validate_submission.py evaluation/results/chahid.csv
+python -m starter.make_submission --data-dir data --output evaluation/results/AlfenLiraByte.csv
+python evaluation/validate_submission.py evaluation/results/AlfenLiraByte.csv
 python evaluation/run_evaluation.py
 ```
 
-If the bundle is elsewhere, replace `data` with its root directory, or omit `--data-dir` after setting `MTAH_DATA_DIR`. The generator reads the tracking and stoppage tables once each. Its output is ignored by Git; submit the generated CSV separately. The public scorer writes its reports under `evaluation/`.
+If the bundle is elsewhere, replace `data` with its root directory, or omit `--data-dir` after setting `MTAH_DATA_DIR`. The generator streams the raw tracking file three times (once for the distances, twice inside the stoppage detector), which takes under a minute. The CSV is named after the team because the scorer names each row of the board after the uploaded file. It is ignored by Git; upload the generated file separately. The public scorer writes its reports under `evaluation/`.

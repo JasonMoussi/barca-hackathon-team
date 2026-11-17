@@ -1,0 +1,5 @@
+# Exact library versions used to generate the submitted AlfenLiraByte.csv, on Python 3.14.7.
+# requirements.txt stays unpinned for the organisers' scorer; install this file to reproduce
+# the submission byte for byte.
+numpy==2.5.4
+pandas==3.1.0
